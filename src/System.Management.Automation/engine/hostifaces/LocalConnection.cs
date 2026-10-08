@@ -662,8 +662,20 @@ namespace System.Management.Automation.Runspaces
             {
                 s_runspaceInitTracer.WriteLine("Runspace open failed");
 
-                // Log engine health event
-                LogEngineHealthEvent(exception);
+                // Preserve the original runspace initialization failure.
+                Console.Error.WriteLine("=== ORIGINAL RUNSPACE OPEN EXCEPTION ===");
+                Console.Error.WriteLine(exception.ToString());
+
+                // Logging must not mask the original exception.
+                try
+                {
+                    LogEngineHealthEvent(exception);
+                }
+                catch (Exception loggingException)
+                {
+                    Console.Error.WriteLine("=== ENGINE HEALTH LOGGING FAILURE ===");
+                    Console.Error.WriteLine(loggingException.ToString());
+                }
 
                 // Log engine for end of engine life
                 if (startLifeCycleEventWritten)
@@ -746,7 +758,7 @@ namespace System.Management.Automation.Runspaces
             logContext.EngineVersion = Version.ToString();
             logContext.HostId = Host.InstanceId.ToString();
             logContext.HostName = Host.Name;
-            logContext.HostVersion = Host.Version.ToString();
+            logContext.HostVersion = Host.Version?.ToString() ?? string.Empty;
             logContext.RunspaceId = InstanceId.ToString();
             logContext.Severity = severity.ToString();
             logContext.ShellId = Utils.DefaultPowerShellShellID;
