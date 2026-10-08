@@ -99,5 +99,19 @@ dotnet build "$PWSH_PROJECT" \
 out="$REPO_ROOT/src/powershell-unix/bin/$CONFIGURATION/net10.0"
 test -f "$out/pwsh.dll" || fatal "pwsh.dll was not produced"
 
+PWSH_LAUNCHER="$out/pwsh"
+
+cat > "$PWSH_LAUNCHER" <<'EOF'
+#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export LD_LIBRARY_PATH="$DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec dotnet "$DIR/pwsh.dll" "$@"
+EOF
+
+chmod 755 "$PWSH_LAUNCHER"
+
+echo "PASS: PowerShell launcher created"
+echo "Launcher: $PWSH_LAUNCHER"
+
 echo "PASS: managed build completed"
 echo "Output: $out"

@@ -1234,3 +1234,23 @@ Out-of-process PSRP transport             PASS
 Start-Job                                 PASS
 Background-job result serialization       PASS
 Background-job cleanup                    PASS
+
+## PowerShell launcher
+
+The managed build script creates an executable launcher next to pwsh.dll:
+
+```text
+src/powershell-unix/bin/Debug/net10.0/pwsh
+```
+
+The launcher configures LD_LIBRARY_PATH, executes pwsh.dll and forwards all command-line arguments. The launcher is required by Start-Job because background jobs start a separate PowerShell process using an executable named pwsh.
+
+Build and test the complete s390x port with:
+
+```bash
+./tools/s390x/build.sh
+./tools/s390x/build-native.sh
+./tools/s390x/test.sh
+```
+
+After these commands, the launcher and libpsl-native.so are available in the Debug output directory. Start-Job has been validated successfully on a clean s390x VM.
