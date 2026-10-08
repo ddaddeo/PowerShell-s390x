@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <NuGetAudit>false</NuGetAudit>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishReadyToRunComposite>false</PublishReadyToRunComposite>
+  </PropertyGroup>
+</Project>
