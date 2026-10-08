@@ -32,3 +32,8 @@ Write-Host "PowerShell version:" $PSVersionTable.PSVersion
 Write-Host "Runtime identifier:" $rid
 Write-Host "PASS: PowerShell works on s390x"
 '
+
+echo "Running extended PowerShell validation"
+PWSH_DIR="$REPO_ROOT/src/powershell-unix/bin/Debug/net10.0"
+"$PWSH_DIR/pwsh" -NoLogo -NoProfile -File "$REPO_ROOT/tools/s390x/test-extended.ps1"
+echo "PASS: extended PowerShell validation completed"
