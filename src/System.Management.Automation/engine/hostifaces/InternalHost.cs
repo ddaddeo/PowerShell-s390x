@@ -93,14 +93,12 @@ namespace System.Management.Automation.Internal.Host
             {
                 if (_versionResult == null)
                 {
-                    _versionResult = _externalHostRef.Value.Version;
-
-#pragma warning disable 56503
-                    if (_versionResult == null)
-                    {
-                        throw PSTraceSource.NewNotImplementedException();
-                    }
-#pragma warning restore 56503
+                    // Some out-of-process hosts do not provide a version.
+                    // Use the running PowerShell version instead of failing
+                    // runspace initialization.
+                    _versionResult =
+                        _externalHostRef.Value.Version ??
+                        PSVersionInfo.PSVersion;
                 }
 
                 return _versionResult;
