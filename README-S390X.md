@@ -847,3 +847,390 @@ Examples:
 ```text
 ParserStrings does not exist
 FormatAndOutXmlLoadingStrings
+## Background jobs with `Start-Job`
+
+Out-of-process background jobs created with `Start-Job` are supported on
+Linux `s390x`.
+
+### Original issue
+
+Before the correction, `Start-Job` failed while opening the child runspace:
+
+```text
+Cannot perform operation because operation
+"NewNotImplementedException" is not implemented.
+```
+
+The resulting job ended with a remoting transport error:
+
+```text
+System.Management.Automation.Remoting.PSRemotingTransportException
+```
+
+Diagnostic tests confirmed that the following components were already
+working correctly:
+
+- creation of an independent child `pwsh` process;
+- execution of `pwsh` in out-of-process server mode;
+- PSRP `Close` and `CloseAck` message exchange;
+- parallel runspaces using `ForEach-Object -Parallel`;
+- native `S390x` architecture detection in the child process.
+
+The problem therefore did not originate from Linux process creation,
+pipes, the basic PSRP transport or s390x parallel execution.
+
+### Root cause
+
+The host used by the background PowerShell process did not provide a value
+for:
+
+```text
+PSHost.Version
+```
+
+The `InternalHost.Version` property treated a null external-host version
+as an unimplemented operation and threw:
+
+```csharp
+PSTraceSource.NewNotImplementedException();
+```
+
+This prevented the child runspace from opening.
+
+A second issue occurred while PowerShell tried to log the original
+runspace initialization failure. Engine-health logging called:
+
+```csharp
+Host.Version.ToString()
+```
+
+Because `Host.Version` was null, logging generated a
+`NullReferenceException` that masked the original error.
+
+### Correction in `InternalHost.cs`
+
+File:
+
+```text
+src/System.Management.Automation/engine/hostifaces/InternalHost.cs
+```
+
+When the external host does not provide its version, PowerShell now uses
+the version of the running engine:
+
+```csharp
+// Some out-of-process hosts do not provide a version.
+// Use the running PowerShell version instead of failing
+// runspace initialization.
+_versionResult =
+    _externalHostRef.Value.Version ??
+    PSVersionInfo.PSVersion;
+```
+
+This replaces the previous behavior that threw
+`PSNotImplementedException` when the external host version was null.
+
+### Correction in `LocalConnection.cs`
+
+File:
+
+```text
+src/System.Management.Automation/engine/hostifaces/LocalConnection.cs
+```
+
+Engine-health logging is now null-safe:
+
+```csharp
+logContext.HostVersion =
+    Host.Version?.ToString() ?? string.Empty;
+```
+
+This replaces:
+
+```csharp
+logContext.HostVersion = Host.Version.ToString();
+```
+
+Logging can therefore no longer replace the original runspace error with
+a secondary `NullReferenceException`.
+
+### Build requirements found during validation
+
+The validated Release build uses:
+
+```text
+.NET SDK:     10.0.112
+.NET runtime: 10.0.12
+Runtime RID:  linux-s390x
+```
+
+A self-contained `linux-s390x` publish requires the following packages:
+
+```text
+Microsoft.NETCore.App.Runtime.linux-s390x 10.0.12
+Microsoft.AspNetCore.App.Runtime.linux-s390x 10.0.12
+Microsoft.NETCore.App.Host.linux-s390x 10.0.12
+```
+
+These packages are not available from the standard NuGet.org feed. They
+must be supplied through the IBM `dotnet-s390x` releases or through a
+local NuGet source.
+
+The package versions must match the runtime version exactly:
+
+```text
+10.0.12
+```
+
+Do not use the SDK version `10.0.112` as the runtime-pack version.
+
+### ReadyToRun
+
+ReadyToRun optimization must currently be disabled for the
+`linux-s390x` publish.
+
+Otherwise, the publish step can fail with:
+
+```text
+NETSDK1094: Unable to optimize assemblies for performance:
+a valid runtime package was not found.
+```
+
+The build configuration must include:
+
+```xml
+<PublishReadyToRun>false</PublishReadyToRun>
+<PublishReadyToRunComposite>false</PublishReadyToRunComposite>
+```
+
+Disabling ReadyToRun does not prevent PowerShell from running. The .NET
+JIT compiler generates native s390x code at runtime.
+
+### Clean Release build
+
+After changing the source files, run a clean build:
+
+```bash
+cd /root/PowerShell-s390x-src
+
+pwsh -NoProfile -Command '
+Remove-Module build -Force -ErrorAction SilentlyContinue
+Import-Module ./build.psm1 -Force
+Start-PSBuild -Configuration Release -Runtime linux-s390x -Clean
+'
+```
+
+The clean build must execute:
+
+```text
+Run ResGen (generating C# bindings for resx files)
+Run TypeGen (generating CorePsTypeCatalog.cs)
+```
+
+Expected successful output includes:
+
+```text
+System.Management.Automation net10.0 succeeded
+Microsoft.PowerShell.ConsoleHost net10.0 succeeded
+Microsoft.PowerShell.Commands.Utility net10.0 succeeded
+Microsoft.PowerShell.Security net10.0 succeeded
+Microsoft.PowerShell.Commands.Management net10.0 succeeded
+Microsoft.PowerShell.SDK net10.0 succeeded
+powershell-unix net10.0 linux-s390x succeeded
+Build succeeded
+```
+
+The Release publish directory is:
+
+```text
+src/powershell-unix/bin/Release/net10.0/linux-s390x/publish
+```
+
+Do not manually delete:
+
+```text
+src/System.Management.Automation/gen
+```
+
+unless the next build uses `Start-PSBuild -Clean`.
+
+The directory contains generated resource bindings. Deleting it without
+regenerating the files can produce thousands of missing-symbol errors,
+including:
+
+```text
+SessionStateStrings does not exist
+ParserStrings does not exist
+Authenticode does not exist
+FileSystemProviderStrings does not exist
+```
+
+### Native library in the Release output
+
+Compile `libpsl-native.so` using the existing procedure documented in the
+**Build the native library** section:
+
+```bash
+./tools/s390x/build-native.sh
+```
+
+The resulting IBM S/390 library must also be present in the Release
+publish directory:
+
+```text
+src/powershell-unix/bin/Release/net10.0/linux-s390x/publish/libpsl-native.so
+```
+
+Verify it with:
+
+```bash
+RELEASE_OUT="$PWD/src/powershell-unix/bin/Release/net10.0/linux-s390x/publish"
+
+file "$RELEASE_OUT/libpsl-native.so"
+ldd "$RELEASE_OUT/libpsl-native.so"
+```
+
+Expected architecture:
+
+```text
+ELF 64-bit MSB shared object, IBM S/390
+```
+
+No dependency may be reported as:
+
+```text
+not found
+```
+
+Without this native library, PowerShell fails during startup with:
+
+```text
+System.DllNotFoundException: libpsl-native
+```
+
+### Validate `Start-Job`
+
+Set the Release output directory:
+
+```bash
+RELEASE_OUT="$PWD/src/powershell-unix/bin/Release/net10.0/linux-s390x/publish"
+```
+
+Run the validation:
+
+```bash
+LD_LIBRARY_PATH="$RELEASE_OUT" \
+"$RELEASE_OUT/pwsh" \
+    -NoLogo \
+    -NoProfile \
+    -Command '
+$ErrorActionPreference = "Stop"
+
+try {
+    $job = Start-Job {
+        [pscustomobject]@{
+            Message      = "CHILD_OK"
+            Version      = $PSVersionTable.PSVersion.ToString()
+            PID          = $PID
+            Architecture = [System.Runtime.InteropServices.RuntimeInformation\]::ProcessArchitecture
+        }
+    }
+
+    $job | Wait-Job | Out-Null
+
+    $result = $job | Receive-Job -ErrorAction Stop
+    $result | Format-List
+
+    if ($result.Message -ne "CHILD_OK") {
+        throw "Unexpected child-process result"
+    }
+
+    $job | Remove-Job -Force
+
+    Write-Host "START-JOB: PASS" -ForegroundColor Green
+}
+catch {
+    Write-Host "START-JOB: FAIL" -ForegroundColor Red
+    Write-Host ($_.Exception.ToString())
+    exit 1
+}
+'
+```
+
+Validated output:
+
+```text
+Message      : CHILD_OK
+Version      : 7.6.0-s390x.3
+Architecture : S390x
+START-JOB: PASS
+```
+
+The PID and Runspace ID are generated dynamically and will be different
+for each execution.
+
+The successful test validates:
+
+- child PowerShell process creation;
+- out-of-process PSRP communication;
+- child runspace initialization;
+- execution of the background script block;
+- serialization of job results;
+- background-job cleanup;
+- native s390x execution.
+
+### Validate parallel runspaces
+
+Parallel runspaces can be tested separately:
+
+```bash
+LD_LIBRARY_PATH="$RELEASE_OUT" \
+"$RELEASE_OUT/pwsh" \
+    -NoLogo \
+    -NoProfile \
+    -Command '
+$ErrorActionPreference = "Stop"
+
+$results = 1..20 | ForEach-Object -Parallel {
+    [pscustomobject]@{
+        Input        = $_
+        Square       = $_ * $_
+        PID          = $PID
+        Architecture = [System.Runtime.InteropServices.RuntimeInformation\]::ProcessArchitecture
+    }
+} -ThrottleLimit 4
+
+$results | Format-Table Input, Square, PID, Architecture
+
+if ($results.Count -ne 20) {
+    throw "Expected 20 results, received $($results.Count)"
+}
+
+Write-Host "PARALLEL RUNSPACES: PASS" -ForegroundColor Green
+'
+```
+
+Parallel results can be returned in a different order. Every result must
+report:
+
+```text
+Architecture = S390x
+```
+
+### Validation status
+
+```text
+PowerShell engine                         PASS
+Native s390x process                      PASS
+Pipeline operations                       PASS
+.NET integration                          PASS
+JSON and XML serialization                PASS
+Filesystem operations                     PASS
+Process enumeration                       PASS
+UTF-8 handling                            PASS
+Child PowerShell process creation         PASS
+Parallel runspaces                        PASS
+Out-of-process PSRP transport             PASS
+Start-Job                                 PASS
+Background-job result serialization       PASS
+Background-job cleanup                    PASS
